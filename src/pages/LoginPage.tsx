@@ -1,16 +1,15 @@
 import { useState, useEffect } from "react";
 import {
+  signInWithEmailAndPassword,
   RecaptchaVerifier,
   signInWithPhoneNumber,
-  createUserWithEmailAndPassword,
 } from "firebase/auth";
-import { auth, db } from "../firebase";
-import { doc, setDoc } from "firebase/firestore";
+import { auth } from "../firebase";
 import { useNavigate } from "react-router-dom";
-import { User, Phone, Mail, Lock, Loader2 } from "lucide-react";
+import { Phone, Mail, Lock, Loader2 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 
-// email domains
+// домены для подсказок
 const emailDomains = [
   "gmail.com",
   "mail.ru",
@@ -24,21 +23,21 @@ const emailDomains = [
   "proton.me",
 ];
 
-// email mask
-function emailMask(v: string) {
-  let t = v.replace(/[^a-zA-Z0-9@._-]/g, "");
-  t = t.toLowerCase().replace(/\s+/g, "");
+// маска email
+function emailMask(value: string) {
+  let v = value.replace(/[^a-zA-Z0-9@._-]/g, "");
+  v = v.toLowerCase().replace(/\s+/g, "");
 
-  const p = t.split("@");
-  if (p.length > 2) t = p[0] + "@" + p.slice(1).join("");
+  const p = v.split("@");
+  if (p.length > 2) v = p[0] + "@" + p.slice(1).join("");
 
-  return t;
+  return v;
 }
 
-// email suggestions
-function getEmailSuggestions(v: string) {
-  if (!v) return [];
-  const [name, domainPart] = v.split("@");
+// подсказки email
+function getEmailSuggestions(value: string) {
+  if (!value) return [];
+  const [name, domainPart] = value.split("@");
   if (!name) return [];
 
   if (!domainPart) return emailDomains.map((d) => `${name}@${d}`);
@@ -48,9 +47,9 @@ function getEmailSuggestions(v: string) {
     .map((d) => `${name}@${d}`);
 }
 
-// phone mask
-function formatPhoneMask(v: string) {
-  const digits = v.replace(/\D/g, "").slice(-10);
+// отображение телефона
+function formatPhoneMask(value: string) {
+  const digits = value.replace(/\D/g, "").slice(-10);
   let r = "+7";
 
   if (digits.length > 0) r += " (" + digits.slice(0, 3);
@@ -61,39 +60,27 @@ function formatPhoneMask(v: string) {
   return r;
 }
 
-// phone e.164
-function normalizePhoneToE164(v: string) {
-  const d = v.replace(/\D/g, "").slice(-10);
+// превращение в E.164
+function normalizePhoneToE164(value: string) {
+  const d = value.replace(/\D/g, "").slice(-10);
   if (d.length !== 10) return null;
   return "+7" + d;
 }
 
-// fio validation
-function validateFullName(v: string) {
-  const t = v.trim();
-  if (t.length < 5) return "Введите ФИО полностью";
-  const p = t.split(/\s+/);
-  if (p.length < 2) return "Введите имя и фамилию";
-  if (!/^[A-Za-zА-Яа-яЁё\s-]+$/.test(t)) return "ФИО должно содержать только буквы";
-  return null;
-}
-
-export default function RegistrationPage() {
+export default function LoginPage() {
   const { user } = useAuth();
   const nav = useNavigate();
 
-  // redirect if logged in
+  // если уже авторизован — переход
   useEffect(() => {
     if (user) nav("/dashboard");
   }, [user]);
 
   const [mode, setMode] = useState<"phone" | "email">("phone");
 
-  const [fullName, setFullName] = useState("");
-  const [fullNameError, setFullNameError] = useState<string | null>(null);
-
-  const [phone, setPhone] = useState("");
+  const [phone, setPhone] = useState(""); // хранит только цифры
   const [phoneError, setPhoneError] = useState<string | null>(null);
+
   const [confirmResult, setConfirmResult] = useState<any>(null);
   const [smsCode, setSmsCode] = useState("");
 
@@ -103,9 +90,6 @@ export default function RegistrationPage() {
 
   const [pass, setPass] = useState("");
   const [passError, setPassError] = useState<string | null>(null);
-
-  const [confirm, setConfirm] = useState("");
-  const [confirmError, setConfirmError] = useState<string | null>(null);
 
   const [formError, setFormError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -117,6 +101,7 @@ export default function RegistrationPage() {
 
   const input = "flex-1 outline-none bg-transparent text-sm";
 
+  // телефон
   const handlePhoneInput = (v: string) => {
     const digits = v.replace(/\D/g, "");
     setPhone(digits.slice(-10));
@@ -124,9 +109,7 @@ export default function RegistrationPage() {
 
   const sendSMS = async () => {
     setFormError("");
-
-    const nErr = validateFullName(fullName);
-    if (nErr) return setFullNameError(nErr);
+    setPhoneError(null);
 
     const e164 = normalizePhoneToE164(phone);
     if (!e164) return setPhoneError("Некорректный номер");
@@ -134,13 +117,13 @@ export default function RegistrationPage() {
     try {
       setLoading(true);
 
-      window.recaptchaVerifier = new RecaptchaVerifier(
-        "recaptcha-container",
+      window.recaptchaLoginVerifier = new RecaptchaVerifier(
+        "recaptcha-login",
         { size: "invisible" },
         auth
       );
 
-      const res = await signInWithPhoneNumber(auth, e164, window.recaptchaVerifier);
+      const res = await signInWithPhoneNumber(auth, e164, window.recaptchaLoginVerifier);
       setConfirmResult(res);
 
     } catch (e: any) {
@@ -153,16 +136,7 @@ export default function RegistrationPage() {
   const verifySMS = async () => {
     try {
       setLoading(true);
-      const userCred = await confirmResult.confirm(smsCode);
-
-      await setDoc(doc(db, "users", userCred.user.uid), {
-        fullName,
-        phone,
-        email: "",
-        visitsLeft: 0,
-        subscriptionEnd: null,
-      });
-
+      await confirmResult.confirm(smsCode);
     } catch {
       setFormError("Неверный SMS-код");
     } finally {
@@ -170,39 +144,27 @@ export default function RegistrationPage() {
     }
   };
 
+  // email
   const handleEmailInput = (v: string) => {
     const masked = emailMask(v);
     setEmail(masked);
     setSuggestions(getEmailSuggestions(masked));
   };
 
-  const registerEmail = async () => {
-    setFullNameError(null);
+  const loginEmail = async () => {
     setEmailError(null);
     setPassError(null);
-    setConfirmError(null);
     setFormError("");
 
-    const nameErr = validateFullName(fullName);
-    if (nameErr) return setFullNameError(nameErr);
     if (!email.includes("@")) return setEmailError("Некорректный email");
-    if (pass.length < 6) return setPassError("Минимум 6 символов");
-    if (pass !== confirm) return setConfirmError("Пароли не совпадают");
+    if (!pass.trim()) return setPassError("Введите пароль");
 
     try {
       setLoading(true);
-      const userCred = await createUserWithEmailAndPassword(auth, email, pass);
-
-      await setDoc(doc(db, "users", userCred.user.uid), {
-        fullName,
-        email,
-        phone: "",
-        visitsLeft: 0,
-        subscriptionEnd: null,
-      });
+      await signInWithEmailAndPassword(auth, email, pass);
 
     } catch (e: any) {
-      setFormError(e.message);
+      setFormError("Неверный email или пароль");
     } finally {
       setLoading(false);
     }
@@ -211,36 +173,19 @@ export default function RegistrationPage() {
   return (
     <div className="w-full h-full flex items-center justify-center p-6">
       <div className="max-w-md w-full bg-white shadow-lg p-6 rounded-xl">
-        <h1 className="text-2xl font-bold mb-4 text-center">Регистрация</h1>
+        <h1 className="text-2xl font-bold mb-4 text-center">Вход</h1>
 
-        {formError && <p className="text-red-500 text-center">{formError}</p>}
+        {formError && <p className="text-red-600 text-center">{formError}</p>}
 
-        {/* ФИО */}
-        <div className={wrapper(!!fullNameError)}>
-          <User className="w-4 h-4 text-gray-400" />
-          <input
-            className={input}
-            placeholder="Иванов Иван"
-            value={fullName}
-            onChange={(e) => setFullName(e.target.value)}
-          />
-        </div>
-        {fullNameError && <p className="text-xs text-red-500">{fullNameError}</p>}
-
-        {/* TAB */}
         <div className="flex mb-4">
           <button
-            className={`flex-1 p-2 border ${
-              mode === "phone" ? "bg-blue-600 text-white" : "bg-gray-100"
-            }`}
+            className={`flex-1 p-2 border ${mode === "phone" ? "bg-blue-600 text-white" : "bg-gray-100"}`}
             onClick={() => setMode("phone")}
           >
             Телефон
           </button>
           <button
-            className={`flex-1 p-2 border ${
-              mode === "email" ? "bg-blue-600 text-white" : "bg-gray-100"
-            }`}
+            className={`flex-1 p-2 border ${mode === "email" ? "bg-blue-600 text-white" : "bg-gray-100"}`}
             onClick={() => setMode("email")}
           >
             Email
@@ -250,6 +195,7 @@ export default function RegistrationPage() {
         {/* PHONE MODE */}
         {mode === "phone" && (
           <>
+            {/* phone input */}
             <div className={wrapper(!!phoneError)}>
               <Phone className="w-4 h-4 text-gray-400" />
               <input
@@ -261,7 +207,7 @@ export default function RegistrationPage() {
             </div>
             {phoneError && <p className="text-xs text-red-500">{phoneError}</p>}
 
-            <div id="recaptcha-container"></div>
+            <div id="recaptcha-login"></div>
 
             {!confirmResult ? (
               <button
@@ -288,7 +234,7 @@ export default function RegistrationPage() {
                   disabled={loading}
                   className="w-full bg-blue-600 text-white py-3 rounded-lg flex justify-center"
                 >
-                  {loading ? <Loader2 className="animate-spin" /> : "Подтвердить"}
+                  {loading ? <Loader2 className="animate-spin" /> : "Войти"}
                 </button>
               </>
             )}
@@ -318,7 +264,7 @@ export default function RegistrationPage() {
                       setEmail(s);
                       setSuggestions([]);
                     }}
-                    className="px-3 py-2 text-sm hover:bg-gray-100 cursor-pointer"
+                    className="px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm"
                   >
                     {s}
                   </div>
@@ -331,42 +277,31 @@ export default function RegistrationPage() {
             <div className={wrapper(!!passError)}>
               <Lock className="w-4 h-4 text-gray-400" />
               <input
-                type="password"
                 className={input}
+                type="password"
                 placeholder="Пароль"
                 value={pass}
                 onChange={(e) => setPass(e.target.value)}
               />
             </div>
+
             {passError && <p className="text-xs text-red-500">{passError}</p>}
 
-            <div className={wrapper(!!confirmError)}>
-              <Lock className="w-4 h-4 text-gray-400" />
-              <input
-                type="password"
-                className={input}
-                placeholder="Повторите пароль"
-                value={confirm}
-                onChange={(e) => setConfirm(e.target.value)}
-              />
-            </div>
-            {confirmError && <p className="text-xs text-red-500">{confirmError}</p>}
-
             <button
-              onClick={registerEmail}
+              onClick={loginEmail}
               disabled={loading}
               className="w-full bg-blue-600 text-white py-3 rounded-lg flex justify-center"
             >
-              {loading ? <Loader2 className="animate-spin" /> : "Зарегистрироваться"}
+              {loading ? <Loader2 className="animate-spin" /> : "Войти"}
             </button>
           </>
         )}
 
         <button
-          onClick={() => nav("/login")}
+          onClick={() => nav("/")}
           className="w-full text-blue-600 mt-4 hover:underline"
         >
-          Уже есть аккаунт? Войти
+          Нет аккаунта? Регистрация
         </button>
       </div>
     </div>

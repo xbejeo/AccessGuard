@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 
 import RegistrationPage from "../pages/RegistrationPage";
 import { DashboardPage } from "../pages/DashboardPage";
+import LoginPage from "../pages/LoginPage.tsx";
 
 import { useAuth } from "../context/AuthContext";
 
@@ -20,6 +21,7 @@ export default function AppRouter() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<RegistrationPage />} />
+        <Route path="/login" element={<LoginPage />} />
 
         <Route
           path="/dashboard"

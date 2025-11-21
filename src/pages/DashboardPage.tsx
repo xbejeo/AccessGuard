@@ -28,15 +28,54 @@ import {
 } from "firebase/firestore";
 import { signOut } from "firebase/auth";
 
+// --- QR-карточка с анимацией ---
+const QRCard: React.FC<{ uid: string }> = ({ uid }) => {
+  return (
+    <div
+      className="mt-6 flex justify-center animate-fade-slide"
+      style={{
+        animation: "fadeSlide 0.35s ease-out",
+      }}
+    >
+      <div className="border border-gray-300 rounded-xl p-5 bg-white shadow-md">
+        <QRCode value={`accessguard://user/${uid}`} size={180} />
+        <p className="text-center mt-2 text-sm text-gray-600">
+          Покажите этот QR-код при входе
+        </p>
+      </div>
+    </div>
+  );
+};
+
+// CSS animation (добавить в index.css)
+const fadeSlideCSS = `
+@keyframes fadeSlide {
+  0% { opacity: 0; transform: translateY(-8px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+`;
+document.head.insertAdjacentHTML("beforeend", `<style>${fadeSlideCSS}</style>`);
+
 export const DashboardPage: React.FC = () => {
   const { user } = useAuth();
 
-  // local state
   const [isEditing, setIsEditing] = useState(false);
   const [visitHistory, setVisitHistory] = useState<any[]>([]);
   const [showQRCode, setShowQRCode] = useState(false);
 
-  // load visit history
+  // Реально-плавное скрытие QR (для анимации)
+  const [renderQR, setRenderQR] = useState(false);
+
+  // Управление появлением/исчезновением ​​QR
+  useEffect(() => {
+    if (showQRCode) {
+      setRenderQR(true);
+    } else {
+      setTimeout(() => setRenderQR(false), 250);
+    }
+  }, [showQRCode]);
+
+  // загрузка истории посещений
   useEffect(() => {
     if (!user) return;
 
@@ -47,27 +86,23 @@ export const DashboardPage: React.FC = () => {
       orderBy("timestamp", "desc")
     );
 
-    const unsubscribe = onSnapshot(q, (snap) => {
-      const items = snap.docs.map((d) => ({
-        id: d.id,
-        ...d.data(),
-      }));
-      setVisitHistory(items);
+    return onSnapshot(q, (snap) => {
+      setVisitHistory(
+        snap.docs.map((d) => ({
+          id: d.id,
+          ...d.data(),
+        }))
+      );
     });
-
-    return () => unsubscribe();
   }, [user]);
 
   if (!user)
     return <div className="p-10 text-center">Загрузка данных...</div>;
 
   const handleSave = async (field: string, value: string) => {
-    const ref = doc(db, "users", user.uid);
-
-    await updateDoc(ref, {
+    await updateDoc(doc(db, "users", user.uid), {
       [field]: value,
     });
-
     setIsEditing(false);
   };
 
@@ -84,17 +119,15 @@ export const DashboardPage: React.FC = () => {
     <MainLayout>
       <div className="mb-6">
         <h1 className="text-2xl font-bold">Личный кабинет</h1>
-        <p className="text-gray-600">
-          Добро пожаловать, {user.fullName}
-        </p>
+        <p className="text-gray-600">Добро пожаловать, {user.fullName}</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
-        {/* LEFT COLUMN */}
+        {/* MAIN COLUMN */}
         <div className="lg:col-span-2 space-y-6">
-          
-          {/* Subscription Block */}
+
+          {/* SUBSCRIPTION */}
           <div>
             <SectionTitle>Статус абонемента</SectionTitle>
 
@@ -108,45 +141,30 @@ export const DashboardPage: React.FC = () => {
 
                     <div className="space-y-1 mb-4 md:mb-0">
                       <p className="text-gray-700">
-                        <span className="font-medium">
-                          Осталось посещений:
-                        </span>{" "}
+                        <span className="font-medium">Осталось посещений:</span>{" "}
                         {user.visitsLeft}
                       </p>
-
                       <p className="text-gray-700">
-                        <span className="font-medium">
-                          Дата окончания:
-                        </span>{" "}
+                        <span className="font-medium">Дата окончания:</span>{" "}
                         {user.subscriptionEnd
-                          ? user.subscriptionEnd
-                              .toDate()
-                              .toLocaleDateString("ru-RU")
-                          : "-"}
+                          .toDate()
+                          .toLocaleDateString("ru-RU")}
                       </p>
                     </div>
                   </div>
 
-                  <div className="mt-4 md:mt-0">
+                  <div>
                     <Button
                       variant="primary"
                       onClick={() => setShowQRCode(!showQRCode)}
                     >
-                      {showQRCode ? "Скрыть QR" : "Показать QR"}
+                      {showQRCode ? "Скрыть QR-код" : "Показать QR-код"}
                     </Button>
                   </div>
                 </div>
 
-                {showQRCode && (
-                  <div className="mt-6 flex justify-center">
-                    <div className="border-2 border-gray-300 rounded-lg p-4 bg-white">
-                      <QRCode value={user.uid} size={180} />
-                      <p className="text-center mt-2 text-sm text-gray-600">
-                        Покажите этот QR-код при входе
-                      </p>
-                    </div>
-                  </div>
-                )}
+                {/* QR BLOCK */}
+                {renderQR && <QRCard uid={user.uid} />}
               </Card>
             ) : (
               <>
@@ -159,34 +177,23 @@ export const DashboardPage: React.FC = () => {
                   </p>
                 </Card>
 
+                {/* SUBSCRIPTIONS */}
                 <SectionTitle>Доступные абонементы</SectionTitle>
-
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <SubscriptionCard
                     title="4 посещения"
                     description="Базовый"
                     price="2000₸"
-                    benefits={[
-                      "30 дней",
-                      "Тренажёры",
-                      "Групповые занятия",
-                    ]}
+                    benefits={["30 дней", "Тренажёры", "Групповые занятия"]}
                     borderColor="border-blue-500"
                   />
-
                   <SubscriptionCard
                     title="8 посещений"
                     description="Стандарт"
                     price="3600₸"
-                    benefits={[
-                      "45 дней",
-                      "Тренажёры",
-                      "Групповые занятия",
-                      "Сауна",
-                    ]}
+                    benefits={["45 дней", "Тренажёры", "Групповые занятия", "Сауна"]}
                     borderColor="border-purple-500"
                   />
-
                   <SubscriptionCard
                     title="Безлимит"
                     description="Премиум"
@@ -204,7 +211,7 @@ export const DashboardPage: React.FC = () => {
             )}
           </div>
 
-          {/* Visit History */}
+          {/* HISTORY */}
           <div>
             <SectionTitle>История посещений</SectionTitle>
             <div className="space-y-3 max-h-96 overflow-y-auto">
@@ -212,19 +219,13 @@ export const DashboardPage: React.FC = () => {
                 visitHistory.map((item) => (
                   <HistoryItem
                     key={item.id}
-                    date={item.timestamp
-                      .toDate()
-                      .toLocaleDateString("ru-RU")}
-                    time={item.timestamp
-                      .toDate()
-                      .toLocaleTimeString("ru-RU")}
+                    date={item.timestamp.toDate().toLocaleDateString("ru-RU")}
+                    time={item.timestamp.toDate().toLocaleTimeString("ru-RU")}
                     status={item.status}
                   />
                 ))
               ) : (
-                <p className="text-gray-500">
-                  Посещений пока нет.
-                </p>
+                <p className="text-gray-500">Посещений пока нет.</p>
               )}
             </div>
           </div>
@@ -234,7 +235,6 @@ export const DashboardPage: React.FC = () => {
         <div className="space-y-6">
           <div>
             <SectionTitle>Персональные данные</SectionTitle>
-
             <Card>
               <div className="space-y-4">
                 <EditableField
@@ -245,7 +245,6 @@ export const DashboardPage: React.FC = () => {
                   onSave={(v) => handleSave("fullName", v)}
                   onCancel={() => setIsEditing(false)}
                 />
-
                 <EditableField
                   label="Телефон"
                   value={user.phone || ""}
@@ -255,7 +254,6 @@ export const DashboardPage: React.FC = () => {
                   onSave={(v) => handleSave("phone", v)}
                   onCancel={() => setIsEditing(false)}
                 />
-
                 <EditableField
                   label="Email"
                   value={user.email}
@@ -284,17 +282,13 @@ export const DashboardPage: React.FC = () => {
           <div>
             <SectionTitle>Навигация</SectionTitle>
             <Card>
-              <ul className="space-y-3">
-                <li>
-                  <button
-                    onClick={handleLogout}
-                    className="flex items-center p-2 hover:bg-gray-50 rounded-lg transition-colors text-red-600 w-full"
-                  >
-                    <LogOutIcon className="w-5 h-5 mr-3" />
-                    <span>Выйти из аккаунта</span>
-                  </button>
-                </li>
-              </ul>
+              <button
+                onClick={handleLogout}
+                className="flex items-center p-2 hover:bg-gray-50 rounded-lg transition text-red-600 w-full"
+              >
+                <LogOutIcon className="w-5 h-5 mr-3" />
+                Выйти из аккаунта
+              </button>
             </Card>
           </div>
         </div>
