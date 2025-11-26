@@ -25,17 +25,22 @@ import {
   where,
   orderBy,
   onSnapshot,
+  getDoc,
+  getDocs,
+  addDoc,
+  Timestamp,
+  serverTimestamp,
 } from "firebase/firestore";
 import { signOut } from "firebase/auth";
 
-// --- QR-карточка с анимацией ---
+// =========================
+// QR-анимация
+// =========================
 const QRCard: React.FC<{ uid: string }> = ({ uid }) => {
   return (
     <div
       className="mt-6 flex justify-center animate-fade-slide"
-      style={{
-        animation: "fadeSlide 0.35s ease-out",
-      }}
+      style={{ animation: "fadeSlide 0.35s ease-out" }}
     >
       <div className="border border-gray-300 rounded-xl p-5 bg-white shadow-md">
         <QRCode value={`accessguard://user/${uid}`} size={180} />
@@ -47,7 +52,6 @@ const QRCard: React.FC<{ uid: string }> = ({ uid }) => {
   );
 };
 
-// CSS animation (добавить в index.css)
 const fadeSlideCSS = `
 @keyframes fadeSlide {
   0% { opacity: 0; transform: translateY(-8px); }
@@ -56,26 +60,34 @@ const fadeSlideCSS = `
 `;
 document.head.insertAdjacentHTML("beforeend", `<style>${fadeSlideCSS}</style>`);
 
+// ===================================================
+// ОСНОВНОЙ Dashboard с покупкой абонемента
+// ===================================================
 export const DashboardPage: React.FC = () => {
-  const { user } = useAuth();
+  const { user, userData } = useAuth();
 
-  const [isEditing, setIsEditing] = useState(false);
   const [visitHistory, setVisitHistory] = useState<any[]>([]);
-  const [showQRCode, setShowQRCode] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
 
-  // Реально-плавное скрытие QR (для анимации)
+  const [showQRCode, setShowQRCode] = useState(false);
   const [renderQR, setRenderQR] = useState(false);
 
-  // Управление появлением/исчезновением ​​QR
+  // FIRESTORE ДАННЫЕ
+  const [plans, setPlans] = useState<any[]>([]);
+  const [membership, setMembership] = useState<any | null>(null);
+  const [buyingId, setBuyingId] = useState<string | null>(null);
+
+  // -------------------------------
+  // Анимация QR
+  // -------------------------------
   useEffect(() => {
-    if (showQRCode) {
-      setRenderQR(true);
-    } else {
-      setTimeout(() => setRenderQR(false), 250);
-    }
+    if (showQRCode) setRenderQR(true);
+    else setTimeout(() => setRenderQR(false), 250);
   }, [showQRCode]);
 
-  // загрузка истории посещений
+  // -------------------------------
+  // Загрузка истории посещений
+  // -------------------------------
   useEffect(() => {
     if (!user) return;
 
@@ -87,33 +99,118 @@ export const DashboardPage: React.FC = () => {
     );
 
     return onSnapshot(q, (snap) => {
-      setVisitHistory(
-        snap.docs.map((d) => ({
-          id: d.id,
-          ...d.data(),
-        }))
-      );
+      setVisitHistory(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
     });
   }, [user]);
 
-  if (!user)
-    return <div className="p-10 text-center">Загрузка данных...</div>;
+  // -------------------------------
+  // Загрузка тарифов
+  // -------------------------------
+  useEffect(() => {
+    const loadPlans = async () => {
+      const snap = await getDocs(collection(db, "plans"));
+      const arr: any[] = [];
+      snap.forEach((p) => arr.push({ id: p.id, ...p.data() }));
+      setPlans(arr);
+    };
 
-  const handleSave = async (field: string, value: string) => {
-    await updateDoc(doc(db, "users", user.uid), {
-      [field]: value,
+    loadPlans();
+  }, []);
+
+  // -------------------------------
+  // Загрузка активного membership
+  // -------------------------------
+  useEffect(() => {
+    const loadMembership = async () => {
+      if (!userData?.activeMembershipId) {
+        setMembership(null);
+        return;
+      }
+
+      const ref = doc(db, "memberships", userData.activeMembershipId);
+      const snap = await getDoc(ref);
+
+      if (snap.exists()) setMembership({ id: snap.id, ...snap.data() });
+      else setMembership(null);
+    };
+
+    loadMembership();
+  }, [userData]);
+
+  // -------------------------------
+  // Покупка абонемента
+  // -------------------------------
+  const purchasePlan = async (planId: string) => {
+  if (!user) return;
+
+  setBuyingId(planId);
+
+  try {
+    // 1. Загружаем тариф
+    const planRef = doc(db, "plans", planId);
+    const planSnap = await getDoc(planRef);
+    if (!planSnap.exists()) return;
+
+    const p = planSnap.data();
+
+    // 2. Вычисляем дату окончания
+    const now = new Date();
+    const expires = new Date(now);
+    expires.setDate(expires.getDate() + (p.durationDays || 30));
+
+    // 3. Создаем membership с null-датами
+    const membershipRef = await addDoc(collection(db, "memberships"), {
+      userId: user.uid,
+      planId,
+      planName: p.name,
+      price: p.price,
+      startedAt: null,          // 🔥 вместо timestamp → null
+      expiresAt: null,          // 🔥 вместо timestamp → null
+      remainingVisits:
+        p.maxVisits && p.maxVisits !== 9999 ? p.maxVisits : null,
+      status: "active",
     });
+
+    // 4. Обновляем документ реальными датами
+    await updateDoc(membershipRef, {
+      startedAt: serverTimestamp(),
+      expiresAt: Timestamp.fromDate(expires),
+    });
+
+    // 5. Записываем в профиль пользователя
+    await updateDoc(doc(db, "users", user.uid), {
+      activeMembershipId: membershipRef.id,
+    });
+
+    // 6. Загружаем обратно новый membership в UI
+    const msnap = await getDoc(membershipRef);
+    setMembership({ id: membershipRef.id, ...msnap.data() });
+  } catch (error) {
+    console.error("Ошибка покупки абонемента:", error);
+  } finally {
+    setBuyingId(null);
+  }
+};
+
+
+  // -------------------------------
+  // Сохранение профиля
+  // -------------------------------
+  const handleSave = async (field: string, value: string) => {
+    await updateDoc(doc(db, "users", user.uid), { [field]: value });
     setIsEditing(false);
   };
 
+  // -------------------------------
+  // Выход
+  // -------------------------------
   const handleLogout = async () => {
     await signOut(auth);
   };
 
-  const hasActiveSub =
-    user.visitsLeft > 0 &&
-    user.subscriptionEnd &&
-    new Date(user.subscriptionEnd.toDate()) > new Date();
+  if (!user) return <div className="p-10 text-center">Загрузка...</div>;
+
+  const hasActiveSub = !!membership;
 
   return (
     <MainLayout>
@@ -123,11 +220,10 @@ export const DashboardPage: React.FC = () => {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        
-        {/* MAIN COLUMN */}
+        {/* LEFT — основной блок */}
         <div className="lg:col-span-2 space-y-6">
 
-          {/* SUBSCRIPTION */}
+          {/* СТАТУС АБОНЕМЕНТА */}
           <div>
             <SectionTitle>Статус абонемента</SectionTitle>
 
@@ -140,30 +236,31 @@ export const DashboardPage: React.FC = () => {
                     </h3>
 
                     <div className="space-y-1 mb-4 md:mb-0">
-                      <p className="text-gray-700">
-                        <span className="font-medium">Осталось посещений:</span>{" "}
-                        {user.visitsLeft}
-                      </p>
+                      {membership.remainingVisits != null && (
+                        <p className="text-gray-700">
+                          <span className="font-medium">
+                            Осталось посещений:
+                          </span>{" "}
+                          {membership.remainingVisits}
+                        </p>
+                      )}
                       <p className="text-gray-700">
                         <span className="font-medium">Дата окончания:</span>{" "}
-                        {user.subscriptionEnd
-                          .toDate()
-                          .toLocaleDateString("ru-RU")}
+                        {membership.expiresAt
+                          ?.toDate()
+                          ?.toLocaleDateString("ru-RU")}
                       </p>
                     </div>
                   </div>
 
-                  <div>
-                    <Button
-                      variant="primary"
-                      onClick={() => setShowQRCode(!showQRCode)}
-                    >
-                      {showQRCode ? "Скрыть QR-код" : "Показать QR-код"}
-                    </Button>
-                  </div>
+                  <Button
+                    variant="primary"
+                    onClick={() => setShowQRCode(!showQRCode)}
+                  >
+                    {showQRCode ? "Скрыть QR-код" : "Показать QR-код"}
+                  </Button>
                 </div>
 
-                {/* QR BLOCK */}
                 {renderQR && <QRCard uid={user.uid} />}
               </Card>
             ) : (
@@ -177,41 +274,33 @@ export const DashboardPage: React.FC = () => {
                   </p>
                 </Card>
 
-                {/* SUBSCRIPTIONS */}
+                {/* ДОСТУПНЫЕ АБОНЕМЕНТЫ */}
                 <SectionTitle>Доступные абонементы</SectionTitle>
+
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <SubscriptionCard
-                    title="4 посещения"
-                    description="Базовый"
-                    price="2000₸"
-                    benefits={["30 дней", "Тренажёры", "Групповые занятия"]}
-                    borderColor="border-blue-500"
-                  />
-                  <SubscriptionCard
-                    title="8 посещений"
-                    description="Стандарт"
-                    price="3600₸"
-                    benefits={["45 дней", "Тренажёры", "Групповые занятия", "Сауна"]}
-                    borderColor="border-purple-500"
-                  />
-                  <SubscriptionCard
-                    title="Безлимит"
-                    description="Премиум"
-                    price="5900₸"
-                    benefits={[
-                      "30 дней",
-                      "Неограниченно",
-                      "Все услуги",
-                      "Личный шкафчик",
-                    ]}
-                    borderColor="border-indigo-500"
-                  />
+                  {plans.map((p) => (
+                    <SubscriptionCard
+                      key={p.id}
+                      title={p.name}
+                      description={p.description}
+                      price={`${p.price}₸`}
+                      benefits={[
+                        `${p.durationDays} дней`,
+                        p.maxVisits !== 9999
+                          ? `${p.maxVisits} посещений`
+                          : "Неограниченно",
+                      ]}
+                      borderColor="border-blue-500"
+                      onClick={() => purchasePlan(p.id)}
+                      disabled={buyingId === p.id}
+                    />
+                  ))}
                 </div>
               </>
             )}
           </div>
 
-          {/* HISTORY */}
+          {/* ИСТОРИЯ */}
           <div>
             <SectionTitle>История посещений</SectionTitle>
             <div className="space-y-3 max-h-96 overflow-y-auto">
@@ -231,7 +320,7 @@ export const DashboardPage: React.FC = () => {
           </div>
         </div>
 
-        {/* RIGHT COLUMN */}
+        {/* RIGHT — профиль */}
         <div className="space-y-6">
           <div>
             <SectionTitle>Персональные данные</SectionTitle>
@@ -245,6 +334,7 @@ export const DashboardPage: React.FC = () => {
                   onSave={(v) => handleSave("fullName", v)}
                   onCancel={() => setIsEditing(false)}
                 />
+
                 <EditableField
                   label="Телефон"
                   value={user.phone || ""}
@@ -254,6 +344,7 @@ export const DashboardPage: React.FC = () => {
                   onSave={(v) => handleSave("phone", v)}
                   onCancel={() => setIsEditing(false)}
                 />
+
                 <EditableField
                   label="Email"
                   value={user.email}
@@ -296,3 +387,5 @@ export const DashboardPage: React.FC = () => {
     </MainLayout>
   );
 };
+
+export default DashboardPage;
