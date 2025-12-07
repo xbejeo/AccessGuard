@@ -1,242 +1,427 @@
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { MainLayout } from "../layouts/MainLayout";
 import { Card } from "../components/Card";
 import { SectionTitle } from "../components/SectionTitle";
 import { Button } from "../components/Button";
 import { SubscriptionCard } from "../components/SubscriptionCard";
 import { HistoryItem } from "../components/HistoryItem";
-import { EditableField } from "../components/EditableField";
-import {
-  UserIcon,
-  PhoneIcon,
-  MailIcon,
-  LogOutIcon,
-} from "lucide-react";
-import QRCode from "react-qr-code";
+import { UserIcon, PhoneIcon, MailIcon, LogOutIcon } from "lucide-react";
 
 import { useAuth } from "../context/AuthContext";
 import { db, auth } from "../firebase";
 
 import {
-  doc,
-  updateDoc,
+  addDoc,
   collection,
-  query,
-  where,
-  orderBy,
-  onSnapshot,
+  doc,
   getDoc,
   getDocs,
-  addDoc,
-  Timestamp,
+  onSnapshot,
+  query,
   serverTimestamp,
+  Timestamp,
+  updateDoc,
+  where,
 } from "firebase/firestore";
 import { signOut } from "firebase/auth";
 
-// =========================
-// QR-анимация
-// =========================
-const QRCard: React.FC<{ uid: string }> = ({ uid }) => {
-  return (
-    <div
-      className="mt-6 flex justify-center animate-fade-slide"
-      style={{ animation: "fadeSlide 0.35s ease-out" }}
-    >
-      <div className="border border-gray-300 rounded-xl p-5 bg-white shadow-md">
-        <QRCode value={`accessguard://user/${uid}`} size={180} />
-        <p className="text-center mt-2 text-sm text-gray-600">
-          Покажите этот QR-код при входе
-        </p>
-      </div>
-    </div>
-  );
+/* ========= Типы ========= */
+
+type Plan = {
+  id: string;
+  name: string;
+  description?: string;
+  price: number;
+  durationDays: number | string;
+  maxVisits?: number;
 };
 
-const fadeSlideCSS = `
-@keyframes fadeSlide {
-  0% { opacity: 0; transform: translateY(-8px); }
-  100% { opacity: 1; transform: translateY(0); }
-}
-`;
-document.head.insertAdjacentHTML("beforeend", `<style>${fadeSlideCSS}</style>`);
+type Membership = {
+  id: string;
+  userId: string;
+  planId: string;
+  planName: string;
+  price: number;
+  startedAt: any;
+  expiresAt: any;
+  remainingVisits: number | null;
+  status: "active" | "expired";
+};
 
-// ===================================================
-// ОСНОВНОЙ Dashboard с покупкой абонемента
-// ===================================================
+type Visit = {
+  id: string;
+  userId: string;
+  membershipId: string;
+  timestamp: any;
+  status: string;
+};
+
+/* ========= Вспомогательные функции ========= */
+
+const toDateSafe = (v: any): Date | null => {
+  if (!v) return null;
+  if (typeof v.toDate === "function") {
+    try {
+      return v.toDate();
+    } catch {
+      return null;
+    }
+  }
+  if (v instanceof Date) return v;
+  return null;
+};
+
+const formatDateSafe = (v: any): string => {
+  const d = toDateSafe(v);
+  return d ? d.toLocaleDateString("ru-RU") : "—";
+};
+
+/* ========= Страница ========= */
+
 export const DashboardPage: React.FC = () => {
   const { user, userData } = useAuth();
 
-  const [visitHistory, setVisitHistory] = useState<any[]>([]);
-  const [isEditing, setIsEditing] = useState(false);
+  const [plans, setPlans] = useState<Plan[]>([]);
+  const [membership, setMembership] = useState<Membership | null>(null);
+  const [visitHistory, setVisitHistory] = useState<Visit[]>([]);
 
-  const [showQRCode, setShowQRCode] = useState(false);
-  const [renderQR, setRenderQR] = useState(false);
-
-  // FIRESTORE ДАННЫЕ
-  const [plans, setPlans] = useState<any[]>([]);
-  const [membership, setMembership] = useState<any | null>(null);
   const [buyingId, setBuyingId] = useState<string | null>(null);
+  const [isWritingOff, setIsWritingOff] = useState(false);
 
-  // -------------------------------
-  // Анимация QR
-  // -------------------------------
+  // состояние профиля
+  const [profileEditing, setProfileEditing] = useState(false);
+  const [profileForm, setProfileForm] = useState({
+    fullName: "",
+    phone: "",
+  });
+
+  /* ============================
+     Инициализация формы профиля
+     ============================ */
   useEffect(() => {
-    if (showQRCode) setRenderQR(true);
-    else setTimeout(() => setRenderQR(false), 250);
-  }, [showQRCode]);
+    if (!user && !userData) return;
 
-  // -------------------------------
-  // Загрузка истории посещений
-  // -------------------------------
+    const fullName =
+      (userData && (userData as any).fullName) ||
+      (userData && (userData as any).displayName) ||
+      (user && (user as any).fullName) ||
+      user?.displayName ||
+      "";
+
+    const phone =
+      (userData && (userData as any).phone) ||
+      (user && (user as any).phone) ||
+      user?.phoneNumber ||
+      "";
+
+    setProfileForm({ fullName, phone });
+  }, [user, userData]);
+
+  /* ============================
+     Загрузка тарифов
+     ============================ */
+  useEffect(() => {
+    const loadPlans = async () => {
+      const snap = await getDocs(collection(db, "plans"));
+      const list: Plan[] = [];
+      snap.forEach((d) =>
+        list.push({
+          id: d.id,
+          ...(d.data() as any),
+        })
+      );
+      setPlans(list);
+    };
+
+    loadPlans().catch(console.error);
+  }, []);
+
+  /* ============================
+     Загрузка активного абонемента
+     ============================ */
   useEffect(() => {
     if (!user) return;
+
+    const loadMembership = async () => {
+      let loaded: Membership | null = null;
+
+      // 1) по activeMembershipId из документа user
+      if (userData?.activeMembershipId) {
+        try {
+          const ref = doc(db, "memberships", userData.activeMembershipId);
+          const snap = await getDoc(ref);
+          if (snap.exists()) {
+            const data = snap.data() as any;
+            if (data.status === "active") {
+              loaded = { id: snap.id, ...data };
+            }
+          }
+        } catch (e) {
+          console.error(
+            "Ошибка загрузки membership по activeMembershipId:",
+            e
+          );
+        }
+      }
+
+      // 2) fallback по userId + status == active (если activeMembershipId пустой или битый)
+      if (!loaded) {
+        try {
+          const ref = collection(db, "memberships");
+          const q = query(
+            ref,
+            where("userId", "==", user.uid),
+            where("status", "==", "active")
+          );
+          const snap = await getDocs(q);
+          if (!snap.empty) {
+            const d = snap.docs[0];
+            loaded = { id: d.id, ...(d.data() as any) };
+          }
+        } catch (e) {
+          console.error("Ошибка поиска активного membership по userId:", e);
+        }
+      }
+
+      setMembership(loaded);
+    };
+
+    loadMembership().catch(console.error);
+  }, [user, userData]);
+
+  /* ============================
+     История посещений
+     Только визиты текущего абонемента
+     ============================ */
+  useEffect(() => {
+    if (!user || !membership) {
+      setVisitHistory([]);
+      return;
+    }
 
     const ref = collection(db, "visits");
     const q = query(
       ref,
       where("userId", "==", user.uid),
-      orderBy("timestamp", "desc")
+      where("membershipId", "==", membership.id)
     );
 
-    return onSnapshot(q, (snap) => {
-      setVisitHistory(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    });
-  }, [user]);
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const list: Visit[] = [];
+        snap.forEach((d) => list.push({ id: d.id, ...(d.data() as any) }));
 
-  // -------------------------------
-  // Загрузка тарифов
-  // -------------------------------
-  useEffect(() => {
-    const loadPlans = async () => {
-      const snap = await getDocs(collection(db, "plans"));
-      const arr: any[] = [];
-      snap.forEach((p) => arr.push({ id: p.id, ...p.data() }));
-      setPlans(arr);
-    };
+        // сортируем по дате по убыванию
+        list.sort((a, b) => {
+          const da = toDateSafe(a.timestamp)?.getTime() ?? 0;
+          const db = toDateSafe(b.timestamp)?.getTime() ?? 0;
+          return db - da;
+        });
 
-    loadPlans();
-  }, []);
+        setVisitHistory(list);
+      },
+      (err) => {
+        console.error("Ошибка загрузки истории посещений:", err);
+      }
+    );
 
-  // -------------------------------
-  // Загрузка активного membership
-  // -------------------------------
-  useEffect(() => {
-    const loadMembership = async () => {
-      if (!userData?.activeMembershipId) {
-        setMembership(null);
+    return unsub;
+  }, [user, membership?.id]); // при смене / исчезновении абонемента пересоздаём подписку
+
+  /* ============================
+     Покупка абонемента
+     ============================ */
+  const purchasePlan = async (planId: string) => {
+    if (!user) return;
+
+    setBuyingId(planId);
+    try {
+      const planRef = doc(db, "plans", planId);
+      const planSnap = await getDoc(planRef);
+      if (!planSnap.exists()) {
+        console.error("Тариф не найден");
         return;
       }
 
-      const ref = doc(db, "memberships", userData.activeMembershipId);
-      const snap = await getDoc(ref);
+      const p = planSnap.data() as any;
 
-      if (snap.exists()) setMembership({ id: snap.id, ...snap.data() });
-      else setMembership(null);
-    };
+      const durationDaysRaw = p.durationDays ?? 30;
+      const durationDays =
+        typeof durationDaysRaw === "number"
+          ? durationDaysRaw
+          : parseInt(String(durationDaysRaw), 10) || 30;
 
-    loadMembership();
-  }, [userData]);
+      const now = new Date();
+      const expires = new Date(
+        now.getTime() + durationDays * 24 * 60 * 60 * 1000
+      );
 
-  // -------------------------------
-  // Покупка абонемента
-  // -------------------------------
-  const purchasePlan = async (planId: string) => {
-  if (!user) return;
+      const membershipRef = await addDoc(collection(db, "memberships"), {
+        userId: user.uid,
+        planId,
+        planName: p.name,
+        price: p.price,
+        startedAt: serverTimestamp(),
+        expiresAt: Timestamp.fromDate(expires),
+        remainingVisits:
+          p.maxVisits && p.maxVisits !== 9999 ? p.maxVisits : null,
+        status: "active",
+      });
 
-  setBuyingId(planId);
+      await updateDoc(doc(db, "users", user.uid), {
+        activeMembershipId: membershipRef.id,
+      });
 
-  try {
-    // 1. Загружаем тариф
-    const planRef = doc(db, "plans", planId);
-    const planSnap = await getDoc(planRef);
-    if (!planSnap.exists()) return;
-
-    const p = planSnap.data();
-
-    // 2. Вычисляем дату окончания
-    const now = new Date();
-    const expires = new Date(now);
-    expires.setDate(expires.getDate() + (p.durationDays || 30));
-
-    // 3. Создаем membership с null-датами
-    const membershipRef = await addDoc(collection(db, "memberships"), {
-      userId: user.uid,
-      planId,
-      planName: p.name,
-      price: p.price,
-      startedAt: null,          // 🔥 вместо timestamp → null
-      expiresAt: null,          // 🔥 вместо timestamp → null
-      remainingVisits:
-        p.maxVisits && p.maxVisits !== 9999 ? p.maxVisits : null,
-      status: "active",
-    });
-
-    // 4. Обновляем документ реальными датами
-    await updateDoc(membershipRef, {
-      startedAt: serverTimestamp(),
-      expiresAt: Timestamp.fromDate(expires),
-    });
-
-    // 5. Записываем в профиль пользователя
-    await updateDoc(doc(db, "users", user.uid), {
-      activeMembershipId: membershipRef.id,
-    });
-
-    // 6. Загружаем обратно новый membership в UI
-    const msnap = await getDoc(membershipRef);
-    setMembership({ id: membershipRef.id, ...msnap.data() });
-  } catch (error) {
-    console.error("Ошибка покупки абонемента:", error);
-  } finally {
-    setBuyingId(null);
-  }
-};
-
-
-  // -------------------------------
-  // Сохранение профиля
-  // -------------------------------
-  const handleSave = async (field: string, value: string) => {
-    await updateDoc(doc(db, "users", user.uid), { [field]: value });
-    setIsEditing(false);
+      const msnap = await getDoc(membershipRef);
+      setMembership({ id: membershipRef.id, ...(msnap.data() as any) });
+    } catch (e) {
+      console.error("Ошибка покупки абонемента:", e);
+    } finally {
+      setBuyingId(null);
+    }
   };
 
-  // -------------------------------
-  // Выход
-  // -------------------------------
+  /* ============================
+     Списание посещения
+     При достижении 0 — делаем статус expired
+     и убираем activeMembershipId у пользователя
+     ============================ */
+  const handleWriteOffVisit = async () => {
+    if (!user || !membership) return;
+
+    const current = membership.remainingVisits;
+
+    if (current == null) {
+      // Безлимитный тариф — пока ничего не делаем со статусом,
+      // просто пишем визит
+      try {
+        setIsWritingOff(true);
+        await addDoc(collection(db, "visits"), {
+          userId: user.uid,
+          membershipId: membership.id,
+          timestamp: serverTimestamp(),
+          status: "visited",
+        });
+      } catch (e) {
+        console.error("Ошибка списания (безлимит):", e);
+      } finally {
+        setIsWritingOff(false);
+      }
+      return;
+    }
+
+    if (current <= 0) {
+      return;
+    }
+
+    const newRemaining = current - 1;
+    const isFinished = newRemaining <= 0;
+
+    try {
+      setIsWritingOff(true);
+
+      // пишем визит
+      await addDoc(collection(db, "visits"), {
+        userId: user.uid,
+        membershipId: membership.id,
+        timestamp: serverTimestamp(),
+        status: "visited",
+      });
+
+      // обновляем membership
+      const mRef = doc(db, "memberships", membership.id);
+      const updates: any = { remainingVisits: newRemaining };
+      if (isFinished) {
+        updates.status = "expired";
+      }
+      await updateDoc(mRef, updates);
+
+      if (isFinished) {
+        // убираем активный абонемент у пользователя
+        await updateDoc(doc(db, "users", user.uid), {
+          activeMembershipId: null,
+        });
+        // в локальном стейте считаем, что абонемента нет
+        setMembership(null);
+      } else {
+        // иначе просто обновляем счётчик в стейте
+        setMembership((prev) =>
+          prev ? { ...prev, remainingVisits: newRemaining } : prev
+        );
+      }
+    } catch (e) {
+      console.error("Ошибка списания посещения:", e);
+    } finally {
+      setIsWritingOff(false);
+    }
+  };
+
+  /* ============================
+     Сохранение профиля (ФИО, телефон)
+     ============================ */
+  const saveProfile = async () => {
+    if (!user) return;
+
+    try {
+      await updateDoc(doc(db, "users", user.uid), {
+        fullName: profileForm.fullName,
+        phone: profileForm.phone,
+      });
+      setProfileEditing(false);
+    } catch (e) {
+      console.error("Ошибка обновления профиля:", e);
+    }
+  };
+
   const handleLogout = async () => {
     await signOut(auth);
   };
 
-  if (!user) return <div className="p-10 text-center">Загрузка...</div>;
+  if (!user) {
+    return (
+      <MainLayout>
+        <div className="p-10 text-center">Загрузка...</div>
+      </MainLayout>
+    );
+  }
 
   const hasActiveSub = !!membership;
+  const greetingName =
+    (userData && (userData as any).fullName) ||
+    user.displayName ||
+    profileForm.fullName ||
+    "";
 
   return (
     <MainLayout>
       <div className="mb-6">
         <h1 className="text-2xl font-bold">Личный кабинет</h1>
-        <p className="text-gray-600">Добро пожаловать, {user.fullName}</p>
+        <p className="text-gray-600">Добро пожаловать, {greetingName}</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* LEFT — основной блок */}
+        {/* LEFT: статус + тарифы + история */}
         <div className="lg:col-span-2 space-y-6">
-
-          {/* СТАТУС АБОНЕМЕНТА */}
+          {/* Статус абонемента */}
           <div>
             <SectionTitle>Статус абонемента</SectionTitle>
 
             {hasActiveSub ? (
               <Card className="border-l-4 border-green-500">
-                <div className="flex flex-col md:flex-row md:items-center md:justify-between">
+                <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
                   <div>
                     <h3 className="text-lg font-semibold text-green-700 mb-2">
                       Абонемент активен
                     </h3>
 
-                    <div className="space-y-1 mb-4 md:mb-0">
-                      {membership.remainingVisits != null && (
+                    <div className="space-y-1 mb-2">
+                      <p className="text-gray-700">
+                        <span className="font-medium">Тариф:</span>{" "}
+                        {membership?.planName}
+                      </p>
+
+                      {membership?.remainingVisits != null && (
                         <p className="text-gray-700">
                           <span className="font-medium">
                             Осталось посещений:
@@ -244,24 +429,32 @@ export const DashboardPage: React.FC = () => {
                           {membership.remainingVisits}
                         </p>
                       )}
+
                       <p className="text-gray-700">
                         <span className="font-medium">Дата окончания:</span>{" "}
-                        {membership.expiresAt
-                          ?.toDate()
-                          ?.toLocaleDateString("ru-RU")}
+                        {formatDateSafe(membership?.expiresAt)}
                       </p>
                     </div>
                   </div>
 
-                  <Button
-                    variant="primary"
-                    onClick={() => setShowQRCode(!showQRCode)}
-                  >
-                    {showQRCode ? "Скрыть QR-код" : "Показать QR-код"}
-                  </Button>
+                  <div className="flex flex-col items-stretch md:items-end gap-2">
+                    <p className="text-sm text-gray-500 max-w-xs text-right">
+                      Нажмите кнопку, чтобы списать одно посещение при визите в
+                      зал.
+                    </p>
+                    <Button
+                      variant="primary"
+                      onClick={handleWriteOffVisit}
+                      disabled={
+                        isWritingOff ||
+                        (membership?.remainingVisits != null &&
+                          membership.remainingVisits <= 0)
+                      }
+                    >
+                      {isWritingOff ? "Списываем..." : "Списать посещение"}
+                    </Button>
+                  </div>
                 </div>
-
-                {renderQR && <QRCard uid={user.uid} />}
               </Card>
             ) : (
               <>
@@ -274,7 +467,6 @@ export const DashboardPage: React.FC = () => {
                   </p>
                 </Card>
 
-                {/* ДОСТУПНЫЕ АБОНЕМЕНТЫ */}
                 <SectionTitle>Доступные абонементы</SectionTitle>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -286,7 +478,7 @@ export const DashboardPage: React.FC = () => {
                       price={`${p.price}₸`}
                       benefits={[
                         `${p.durationDays} дней`,
-                        p.maxVisits !== 9999
+                        p.maxVisits && p.maxVisits !== 9999
                           ? `${p.maxVisits} посещений`
                           : "Неограниченно",
                       ]}
@@ -300,68 +492,132 @@ export const DashboardPage: React.FC = () => {
             )}
           </div>
 
-          {/* ИСТОРИЯ */}
+          {/* История посещений (только текущий абонемент) */}
           <div>
             <SectionTitle>История посещений</SectionTitle>
             <div className="space-y-3 max-h-96 overflow-y-auto">
-              {visitHistory.length > 0 ? (
-                visitHistory.map((item) => (
-                  <HistoryItem
-                    key={item.id}
-                    date={item.timestamp.toDate().toLocaleDateString("ru-RU")}
-                    time={item.timestamp.toDate().toLocaleTimeString("ru-RU")}
-                    status={item.status}
-                  />
-                ))
-              ) : (
+              {hasActiveSub && visitHistory.length > 0 ? (
+                visitHistory.map((item) => {
+                  const d = toDateSafe(item.timestamp);
+                  return (
+                    <HistoryItem
+                      key={item.id}
+                      date={d ? d.toLocaleDateString("ru-RU") : "—"}
+                      time={d ? d.toLocaleTimeString("ru-RU") : ""}
+                      status={item.status}
+                    />
+                  );
+                })
+              ) : hasActiveSub ? (
                 <p className="text-gray-500">Посещений пока нет.</p>
+              ) : (
+                <p className="text-gray-500">
+                  Нет активного абонемента — история не отображается.
+                </p>
               )}
             </div>
           </div>
         </div>
 
-        {/* RIGHT — профиль */}
+        {/* RIGHT: профиль + выход */}
         <div className="space-y-6">
           <div>
             <SectionTitle>Персональные данные</SectionTitle>
             <Card>
               <div className="space-y-4">
-                <EditableField
-                  label="ФИО"
-                  value={user.fullName}
-                  icon={<UserIcon className="w-5 h-5 text-gray-500" />}
-                  isEditing={isEditing}
-                  onSave={(v) => handleSave("fullName", v)}
-                  onCancel={() => setIsEditing(false)}
-                />
+                {/* ФИО */}
+                <div className="flex items-start gap-3">
+                  <UserIcon className="w-5 h-5 text-gray-500 mt-1" />
+                  <div className="flex-1">
+                    <p className="text-xs text-gray-500 mb-1">ФИО</p>
+                    {profileEditing ? (
+                      <input
+                        className="w-full border rounded-lg px-3 py-2 text-sm"
+                        value={profileForm.fullName}
+                        onChange={(e) =>
+                          setProfileForm((prev) => ({
+                            ...prev,
+                            fullName: e.target.value,
+                          }))
+                        }
+                        placeholder="Введите ФИО"
+                      />
+                    ) : (
+                      <p className="font-medium text-gray-900">
+                        {profileForm.fullName || "—"}
+                      </p>
+                    )}
+                  </div>
+                </div>
 
-                <EditableField
-                  label="Телефон"
-                  value={user.phone || ""}
-                  type="tel"
-                  icon={<PhoneIcon className="w-5 h-5 text-gray-500" />}
-                  isEditing={isEditing}
-                  onSave={(v) => handleSave("phone", v)}
-                  onCancel={() => setIsEditing(false)}
-                />
+                {/* Телефон */}
+                <div className="flex items-start gap-3">
+                  <PhoneIcon className="w-5 h-5 text-gray-500 mt-1" />
+                  <div className="flex-1">
+                    <p className="text-xs text-gray-500 mb-1">Телефон</p>
+                    {profileEditing ? (
+                      <input
+                        className="w-full border rounded-lg px-3 py-2 text-sm"
+                        value={profileForm.phone}
+                        onChange={(e) =>
+                          setProfileForm((prev) => ({
+                            ...prev,
+                            phone: e.target.value,
+                          }))
+                        }
+                        placeholder="+7…"
+                      />
+                    ) : (
+                      <p className="font-medium text-gray-900">
+                        {profileForm.phone || "—"}
+                      </p>
+                    )}
+                  </div>
+                </div>
 
-                <EditableField
-                  label="Email"
-                  value={user.email}
-                  type="email"
-                  icon={<MailIcon className="w-5 h-5 text-gray-500" />}
-                  isEditing={isEditing}
-                  onSave={(v) => handleSave("email", v)}
-                  onCancel={() => setIsEditing(false)}
-                />
+                {/* Email (read-only) */}
+                <div className="flex items-start gap-3">
+                  <MailIcon className="w-5 h-5 text-gray-500 mt-1" />
+                  <div className="flex-1">
+                    <p className="text-xs text-gray-500 mb-1">Email</p>
+                    <p className="font-medium text-gray-900">{user.email}</p>
+                  </div>
+                </div>
               </div>
 
-              {!isEditing && (
+              {profileEditing ? (
+                <div className="mt-6 flex gap-3">
+                  <Button variant="primary" fullWidth onClick={saveProfile}>
+                    Сохранить
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    fullWidth
+                    onClick={() => {
+                      setProfileEditing(false);
+                      const fullName =
+                        (userData && (userData as any).fullName) ||
+                        (userData && (userData as any).displayName) ||
+                        (user && (user as any).fullName) ||
+                        user?.displayName ||
+                        "";
+                      const phone =
+                        (userData && (userData as any).phone) ||
+                        (user && (user as any).phone) ||
+                        user?.phoneNumber ||
+                        "";
+                      setProfileForm({ fullName, phone });
+                    }}
+                  >
+                    Отмена
+                  </Button>
+                </div>
+              ) : (
                 <div className="mt-6">
                   <Button
                     variant="secondary"
                     fullWidth
-                    onClick={() => setIsEditing(true)}
+                    onClick={() => setProfileEditing(true)}
                   >
                     Редактировать
                   </Button>
