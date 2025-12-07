@@ -1,0 +1,6 @@
+git clone https://github.com/xbejeo/AccessGuard.git
+cd AccessGuard    # это твой Project
+git checkout dev             # или: git switch dev
+npm install
+npm run dev             # пользовательский фронт
+firebase deploy --only hosting     #  админка
