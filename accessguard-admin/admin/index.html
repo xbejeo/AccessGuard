@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>AccessGuard — Админ-панель</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Стили админки -->
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="page-wrapper">
+    <!-- =======================
+         БЛОК АВТОРИЗАЦИИ
+         ======================= -->
+    <section id="auth-section" class="auth-section">
+      <div class="auth-card">
+        <h1 class="auth-title">Админ-панель AccessGuard</h1>
+        <p class="auth-subtitle">Войдите с помощью email и пароля администратора</p>
+
+        <form id="login-form" class="auth-form">
+          <label class="auth-label">
+            <span>Email</span>
+            <input
+              id="email-input"
+              type="email"
+              class="auth-input"
+              placeholder="admin@example.com"
+              autocomplete="username"
+              required
+            />
+          </label>
+
+          <label class="auth-label">
+            <span>Пароль</span>
+            <input
+              id="password-input"
+              type="password"
+              class="auth-input"
+              placeholder="Введите пароль"
+              autocomplete="current-password"
+              required
+            />
+          </label>
+
+          <button id="login-btn" type="submit" class="auth-button">
+            Войти
+          </button>
+        </form>
+      </div>
+    </section>
+
+    <!-- =======================
+         ОСНОВНАЯ АДМИН-ПАНЕЛЬ
+         ======================= -->
+    <section id="admin-section" class="admin-section hidden">
+      <!-- Верхняя панель -->
+      <header class="admin-header">
+        <div class="admin-header-left">
+          <h1 class="admin-title">Админ-панель AccessGuard</h1>
+          <p class="admin-subtitle">Управление пользователями, абонементами и посещениями</p>
+        </div>
+        <div class="admin-header-right">
+          <button id="logout-btn" class="logout-btn">Выйти</button>
+        </div>
+      </header>
+
+      <!-- Навигация по коллекциям -->
+      <nav class="tabs-nav">
+        <!-- data-col = имя коллекции в Firestore -->
+        <button class="tab active" data-col="users" onclick="loadCollection('users')">
+          Пользователи
+        </button>
+        <button class="tab" data-col="memberships" onclick="loadCollection('memberships')">
+          Абонементы
+        </button>
+        <button class="tab" data-col="visits" onclick="loadCollection('visits')">
+          Посещения
+        </button>
+        <button class="tab" data-col="plans" onclick="loadCollection('plans')">
+          Тарифы
+        </button>
+      </nav>
+
+      <!-- Панель поиска и фильтров -->
+      <section class="controls">
+        <div class="controls-row">
+          <div class="controls-group">
+            <label class="controls-label">
+              Поиск
+              <input
+                id="search-input"
+                type="text"
+                class="controls-input"
+                placeholder="Поиск по всем полям"
+              />
+            </label>
+          </div>
+
+          <div class="controls-group">
+            <label class="controls-label">
+              Поле фильтра
+              <select id="filter-field" class="controls-select">
+                <option value="">Поле фильтра</option>
+                <!-- Опции будут подставлены из JS (buildFilterFieldOptions) -->
+              </select>
+            </label>
+
+            <label class="controls-label">
+              Значение
+              <input
+                id="filter-value"
+                type="text"
+                class="controls-input"
+                placeholder="Значение для фильтра"
+              />
+            </label>
+
+            <button id="clear-filters" class="controls-button">
+              Сбросить фильтры
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Таблица -->
+      <main class="admin-main">
+        <div id="table-container" class="table-container">
+          <!-- Таблица подставляется JS (renderTable) -->
+        </div>
+      </main>
+
+      <!-- Контейнер для тост-уведомлений -->
+      <div id="toast-container" class="toast-container"></div>
+    </section>
+  </div>
+
+  <!-- Скрипт админ-панели -->
+  <script type="module" src="./admin-app.js"></script>
+</body>
+</html>
